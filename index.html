@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visor de Pelea de Robots — G402</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg-dark: #0b0f17;
+      --bg-bar: #111827;
+      --border-subtle: rgba(255, 255, 255, 0.1);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+
+      --j1-accent: #3b82f6;
+      --j1-bg: linear-gradient(180deg, #0f1c36 0%, #0a1020 100%);
+      --j1-glow: rgba(59, 130, 246, 0.35);
+
+      --j2-accent: #ef4444;
+      --j2-bg: linear-gradient(180deg, #321218 0%, #1a0b0f 100%);
+      --j2-glow: rgba(239, 68, 68, 0.35);
+
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
+      overflow-x: hidden;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* Barra superior */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 20px;
+      background: var(--bg-bar);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-wrap: wrap;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-subtle);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 8px var(--warn);
+      flex-shrink: 0;
+    }
+
+    .status-pill.connected .status-dot {
+      background: var(--ok);
+      box-shadow: 0 0 8px var(--ok);
+    }
+
+    .status-pill.error .status-dot {
+      background: var(--err);
+      box-shadow: 0 0 8px var(--err);
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-danger {
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #fecaca;
+    }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
+    }
+
+    /* Arena dividida en 2 paneles iguales */
+    .arena {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      width: 100%;
+      min-height: 0;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: clamp(16px, 3vh, 36px) clamp(16px, 3vw, 40px);
+      position: relative;
+      text-align: center;
+      transition: box-shadow 0.25s ease;
+    }
+
+    .panel-j1 {
+      background: var(--j1-bg);
+      border-right: 2px solid var(--border-subtle);
+    }
+
+    .panel-j2 {
+      background: var(--j2-bg);
+    }
+
+    .panel.flash-j1 {
+      box-shadow: inset 0 0 90px var(--j1-glow);
+    }
+
+    .panel.flash-j2 {
+      box-shadow: inset 0 0 90px var(--j2-glow);
+    }
+
+    .panel.winner {
+      outline: 3px solid rgba(250, 204, 21, 0.75);
+      outline-offset: -3px;
+    }
+
+    /* Fila 1: Nombre del jugador */
+    .player-header {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .player-meta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .device-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+    }
+
+    .device-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+    }
+
+    .device-status.online {
+      background: rgba(34, 197, 94, 0.14);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: #bbf7d0;
+    }
+
+    .device-status.online .device-dot {
+      background: var(--ok);
+      box-shadow: 0 0 8px var(--ok);
+    }
+
+    .player-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 4px 14px;
+      border-radius: 999px;
+    }
+
+    .panel-j1 .player-tag {
+      background: rgba(59, 130, 246, 0.2);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.45);
+    }
+
+    .panel-j2 .player-tag {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.45);
+    }
+
+    .player-name-input {
+      width: 100%;
+      max-width: 520px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: clamp(1.6rem, 3.4vw, 3rem);
+      font-weight: 800;
+      text-align: center;
+      padding: 4px 10px;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .player-name-input:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .player-name-input:focus {
+      outline: none;
+      border-color: rgba(255, 255, 255, 0.45);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    /* Centro: Puntaje muy grande */
+    .score-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      margin: 8px 0;
+    }
+
+    .section-label {
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .score-value {
+      font-size: clamp(6.5rem, 17vw, 15rem);
+      font-weight: 900;
+      line-height: 0.95;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.03em;
+      text-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+      user-select: none;
+      transition: transform 0.15s ease;
+    }
+
+    .score-value.bump {
+      transform: scale(1.07);
+    }
+
+    .panel-j1 .score-value {
+      color: #eff6ff;
+    }
+
+    .panel-j2 .score-value {
+      color: #fef2f2;
+    }
+
+    /* Abajo del puntaje: Penalizaciones y Resultado Final */
+    .bottom-stats {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .penalty-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 18px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .penalty-info {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      text-align: left;
+    }
+
+    .penalty-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #fbbf24;
+    }
+
+    .penalty-sub {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .penalty-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn-step {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.09);
+      color: var(--text-main);
+      font-size: 1.3rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease;
+    }
+
+    .btn-step:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+
+    .penalty-value {
+      min-width: 44px;
+      font-size: clamp(1.6rem, 3vw, 2.3rem);
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #fde68a;
+    }
+
+    .final-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      border-radius: 16px;
+      background: rgba(0, 0, 0, 0.38);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+
+    .final-label {
+      font-size: 1rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .final-value {
+      font-size: clamp(2.4rem, 5vw, 4rem);
+      font-weight: 900;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      color: #ffffff;
+    }
+
+    /* Modal de configuración */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 50;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal {
+      width: 100%;
+      max-width: 440px;
+      background: #111827;
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .modal h2 {
+      font-size: 1.1rem;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .field input {
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: #0b0f17;
+      color: var(--text-main);
+      font-size: 0.95rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    /* Responsive para pantallas angostas */
+    @media (max-width: 768px) {
+      .arena {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1fr;
+      }
+
+      .panel-j1 {
+        border-right: none;
+        border-bottom: 2px solid var(--border-subtle);
+      }
+
+      .score-value {
+        font-size: clamp(5rem, 22vw, 8.5rem);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span>Pelea de Robots · G402</span>
+    </div>
+
+    <div id="statusPill" class="status-pill">
+      <span class="status-dot"></span>
+      <span id="statusText">Conectando a broker.emqx.io...</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btnConfig" class="btn" type="button">Configurar MQTT</button>
+      <button id="btnReset" class="btn btn-danger" type="button">Reiniciar pelea</button>
+    </div>
+  </header>
+
+  <main class="arena">
+    <!-- PANEL JUGADOR 1 -->
+    <section id="panelJ1" class="panel panel-j1">
+      <div class="player-header">
+        <div class="player-meta">
+          <span class="player-tag">Jugador 1 · J1</span>
+          <span id="deviceJ1" class="device-status">
+            <span class="device-dot"></span>
+            <span id="deviceTextJ1">Esperando conexión...</span>
+          </span>
+        </div>
+        <input id="nameJ1" class="player-name-input" type="text" value="Nombre Jugador 1"
+          aria-label="Nombre real del Jugador 1" title="Haz clic para editar el nombre real del Jugador 1" />
+      </div>
+
+      <div class="score-section">
+        <span class="section-label">Puntaje</span>
+        <div id="scoreJ1" class="score-value">0</div>
+      </div>
+
+      <div class="bottom-stats">
+        <div class="penalty-box">
+          <div class="penalty-info">
+            <span class="penalty-title">Penalización</span>
+            <span class="penalty-sub">Se resta al puntaje</span>
+          </div>
+          <div class="penalty-controls">
+            <button class="btn-step" type="button" onclick="cambiarPenalizacion('J1', -1)"
+              aria-label="Restar penalización a Jugador 1">−</button>
+            <span id="penaltyJ1" class="penalty-value">0</span>
+            <button class="btn-step" type="button" onclick="cambiarPenalizacion('J1', 1)"
+              aria-label="Sumar penalización a Jugador 1">+</button>
+          </div>
+        </div>
+
+        <div class="final-box">
+          <span class="final-label">Resultado Final</span>
+          <span id="finalJ1" class="final-value">0</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL JUGADOR 2 -->
+    <section id="panelJ2" class="panel panel-j2">
+      <div class="player-header">
+        <div class="player-meta">
+          <span class="player-tag">Jugador 2 · J2</span>
+          <span id="deviceJ2" class="device-status">
+            <span class="device-dot"></span>
+            <span id="deviceTextJ2">Esperando conexión...</span>
+          </span>
+        </div>
+        <input id="nameJ2" class="player-name-input" type="text" value="Nombre Jugador 2"
+          aria-label="Nombre real del Jugador 2" title="Haz clic para editar el nombre real del Jugador 2" />
+      </div>
+
+      <div class="score-section">
+        <span class="section-label">Puntaje</span>
+        <div id="scoreJ2" class="score-value">0</div>
+      </div>
+
+      <div class="bottom-stats">
+        <div class="penalty-box">
+          <div class="penalty-info">
+            <span class="penalty-title">Penalización</span>
+            <span class="penalty-sub">Se resta al puntaje</span>
+          </div>
+          <div class="penalty-controls">
+            <button class="btn-step" type="button" onclick="cambiarPenalizacion('J2', -1)"
+              aria-label="Restar penalización a Jugador 2">−</button>
+            <span id="penaltyJ2" class="penalty-value">0</span>
+            <button class="btn-step" type="button" onclick="cambiarPenalizacion('J2', 1)"
+              aria-label="Sumar penalización a Jugador 2">+</button>
+          </div>
+        </div>
+
+        <div class="final-box">
+          <span class="final-label">Resultado Final</span>
+          <span id="finalJ2" class="final-value">0</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal de configuración MQTT -->
+  <div id="modalConfig" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal">
+      <h2 id="modalTitle">Configuración MQTT</h2>
+      <div class="field">
+        <label for="inputBroker">Broker WebSocket URL</label>
+        <input id="inputBroker" type="text" />
+      </div>
+      <div class="field">
+        <label for="inputTopic">Tópico de puntaje</label>
+        <input id="inputTopic" type="text" />
+      </div>
+      <div class="field">
+        <label for="inputControlTopic">Tópico de control (estado e IP)</label>
+        <input id="inputControlTopic" type="text" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnCancelConfig" class="btn" type="button">Cancelar</button>
+        <button id="btnSaveConfig" class="btn" type="button">Guardar y reconectar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const defaultBroker = window.location.protocol === "https:"
+      ? "wss://broker.emqx.io:8084/mqtt"
+      : "ws://broker.emqx.io:8083/mqtt";
+
+    const state = {
+      brokerUrl: localStorage.getItem("g402_broker") || defaultBroker,
+      topic: localStorage.getItem("g402_topic") || "G402/Robot",
+      controlTopic: localStorage.getItem("g402_control_topic") || "G408/control",
+      J1: {
+        name: localStorage.getItem("g402_name_J1") || "Nombre Jugador 1",
+        score: 0,
+        penalty: 0,
+        online: false,
+        ip: null
+      },
+      J2: {
+        name: localStorage.getItem("g402_name_J2") || "Nombre Jugador 2",
+        score: 0,
+        penalty: 0,
+        online: false,
+        ip: null
+      }
+    };
+
+    const el = {
+      statusPill: document.getElementById("statusPill"),
+      statusText: document.getElementById("statusText"),
+      panelJ1: document.getElementById("panelJ1"),
+      panelJ2: document.getElementById("panelJ2"),
+      deviceJ1: document.getElementById("deviceJ1"),
+      deviceTextJ1: document.getElementById("deviceTextJ1"),
+      deviceJ2: document.getElementById("deviceJ2"),
+      deviceTextJ2: document.getElementById("deviceTextJ2"),
+      nameJ1: document.getElementById("nameJ1"),
+      nameJ2: document.getElementById("nameJ2"),
+      scoreJ1: document.getElementById("scoreJ1"),
+      scoreJ2: document.getElementById("scoreJ2"),
+      penaltyJ1: document.getElementById("penaltyJ1"),
+      penaltyJ2: document.getElementById("penaltyJ2"),
+      finalJ1: document.getElementById("finalJ1"),
+      finalJ2: document.getElementById("finalJ2"),
+      modalConfig: document.getElementById("modalConfig"),
+      inputBroker: document.getElementById("inputBroker"),
+      inputTopic: document.getElementById("inputTopic"),
+      inputControlTopic: document.getElementById("inputControlTopic")
+    };
+
+    el.nameJ1.value = state.J1.name;
+    el.nameJ2.value = state.J2.name;
+
+    el.nameJ1.addEventListener("input", () => {
+      state.J1.name = el.nameJ1.value;
+      localStorage.setItem("g402_name_J1", state.J1.name);
+    });
+
+    el.nameJ2.addEventListener("input", () => {
+      state.J2.name = el.nameJ2.value;
+      localStorage.setItem("g402_name_J2", state.J2.name);
+    });
+
+    function renderDeviceStatus(jugador, badgeEl, textEl) {
+      const info = state[jugador];
+      badgeEl.classList.toggle("online", info.online);
+      if (info.online) {
+        textEl.textContent = info.ip ? `En línea · IP: ${info.ip}` : "En línea";
+      } else {
+        textEl.textContent = "Esperando conexión...";
+      }
+    }
+
+    function render() {
+      const final1 = state.J1.score - state.J1.penalty;
+      const final2 = state.J2.score - state.J2.penalty;
+
+      el.scoreJ1.textContent = state.J1.score;
+      el.scoreJ2.textContent = state.J2.score;
+      el.penaltyJ1.textContent = state.J1.penalty;
+      el.penaltyJ2.textContent = state.J2.penalty;
+      el.finalJ1.textContent = final1;
+      el.finalJ2.textContent = final2;
+
+      renderDeviceStatus("J1", el.deviceJ1, el.deviceTextJ1);
+      renderDeviceStatus("J2", el.deviceJ2, el.deviceTextJ2);
+
+      el.panelJ1.classList.toggle("winner", final1 > final2 && (final1 > 0 || final2 > 0));
+      el.panelJ2.classList.toggle("winner", final2 > final1 && (final1 > 0 || final2 > 0));
+    }
+
+    function flashPanel(jugador) {
+      const panel = jugador === "J1" ? el.panelJ1 : el.panelJ2;
+      const scoreEl = jugador === "J1" ? el.scoreJ1 : el.scoreJ2;
+      const flashClass = jugador === "J1" ? "flash-j1" : "flash-j2";
+
+      panel.classList.remove(flashClass);
+      scoreEl.classList.remove("bump");
+      void panel.offsetWidth;
+      panel.classList.add(flashClass);
+      scoreEl.classList.add("bump");
+
+      setTimeout(() => {
+        panel.classList.remove(flashClass);
+        scoreEl.classList.remove("bump");
+      }, 350);
+    }
+
+    function cambiarPenalizacion(jugador, delta) {
+      const next = state[jugador].penalty + delta;
+      state[jugador].penalty = Math.max(0, next);
+      render();
+    }
+
+    window.cambiarPenalizacion = cambiarPenalizacion;
+
+    // El Arduino publica {"Jugador":J1,"Puntaje":1} o {"Jugador":J1,"IP":192.168.1.50}
+    // (sin comillas en J1/J2 ni en la IP), o JSON estándar. Soportamos ambos formatos.
+    function parseArduinoPayload(raw) {
+      const text = raw.trim();
+      try {
+        return JSON.parse(text);
+      } catch (_) {
+        const normalized = text.replace(
+          /:\s*([^",{\[\s][^,}]*?)\s*(?=[,}])/g,
+          (_match, val) => {
+            if (/^(true|false|null|-?\d+(\.\d+)?)$/i.test(val)) {
+              return `:${val}`;
+            }
+            return `:"${val}"`;
+          }
+        );
+        return JSON.parse(normalized);
+      }
+    }
+
+    let client = null;
+
+    function setStatus(type, message) {
+      el.statusPill.classList.remove("connected", "error");
+      if (type === "connected") el.statusPill.classList.add("connected");
+      if (type === "error") el.statusPill.classList.add("error");
+      el.statusText.textContent = message;
+    }
+
+    function connectMqtt() {
+      if (typeof mqtt === "undefined") {
+        setStatus("error", "No se pudo cargar la librería MQTT.js");
+        return;
+      }
+
+      if (client) {
+        client.end(true);
+      }
+
+      setStatus("connecting", `Conectando a ${state.topic}...`);
+
+      const clientId = "VisorG402_" + Math.random().toString(16).slice(2, 10);
+      client = mqtt.connect(state.brokerUrl, {
+        clientId,
+        clean: true,
+        reconnectPeriod: 3000,
+        connectTimeout: 10000
+      });
+
+      client.on("connect", () => {
+        setStatus("connected", `Conectado · ${state.topic} + ${state.controlTopic}`);
+        client.subscribe([state.topic, state.controlTopic], (err) => {
+          if (err) {
+            setStatus("error", "Error al suscribirse a los tópicos");
+          }
+        });
+      });
+
+      client.on("reconnect", () => {
+        setStatus("connecting", "Reconectando al broker...");
+      });
+
+      client.on("error", () => {
+        setStatus("error", "Error de conexión MQTT");
+      });
+
+      client.on("close", () => {
+        if (!client.reconnecting) {
+          setStatus("error", "Desconectado del broker");
+        }
+      });
+
+      client.on("message", (topic, payload) => {
+        try {
+          const data = parseArduinoPayload(payload.toString());
+          const jugadorRaw = String(data.Jugador || data.jugador || "").trim().toUpperCase();
+          if (jugadorRaw !== "J1" && jugadorRaw !== "J2") return;
+
+          if (topic === state.controlTopic || data.IP !== undefined || data.ip !== undefined) {
+            const ip = String(data.IP ?? data.ip ?? "").trim();
+            state[jugadorRaw].online = true;
+            if (ip) {
+              state[jugadorRaw].ip = ip;
+            }
+            render();
+            return;
+          }
+
+          const puntaje = Number(data.Puntaje ?? data.puntaje);
+          if (Number.isFinite(puntaje)) {
+            state[jugadorRaw].score = puntaje;
+            state[jugadorRaw].online = true;
+            render();
+            flashPanel(jugadorRaw);
+          }
+        } catch (err) {
+          console.warn("Mensaje MQTT no reconocido:", payload.toString(), err);
+        }
+      });
+    }
+
+    document.getElementById("btnReset").addEventListener("click", () => {
+      state.J1.score = 0;
+      state.J1.penalty = 0;
+      state.J2.score = 0;
+      state.J2.penalty = 0;
+      render();
+    });
+
+    document.getElementById("btnConfig").addEventListener("click", () => {
+      el.inputBroker.value = state.brokerUrl;
+      el.inputTopic.value = state.topic;
+      el.inputControlTopic.value = state.controlTopic;
+      el.modalConfig.classList.add("open");
+    });
+
+    document.getElementById("btnCancelConfig").addEventListener("click", () => {
+      el.modalConfig.classList.remove("open");
+    });
+
+    document.getElementById("btnSaveConfig").addEventListener("click", () => {
+      const newBroker = el.inputBroker.value.trim();
+      const newTopic = el.inputTopic.value.trim();
+      const newControlTopic = el.inputControlTopic.value.trim();
+      if (newBroker && newTopic && newControlTopic) {
+        state.brokerUrl = newBroker;
+        state.topic = newTopic;
+        state.controlTopic = newControlTopic;
+        localStorage.setItem("g402_broker", newBroker);
+        localStorage.setItem("g402_topic", newTopic);
+        localStorage.setItem("g402_control_topic", newControlTopic);
+        el.modalConfig.classList.remove("open");
+        connectMqtt();
+      }
+    });
+
+    render();
+    connectMqtt();
+  </script>
+</body>
+
+</html>
